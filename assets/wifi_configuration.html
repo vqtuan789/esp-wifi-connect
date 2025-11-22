@@ -268,7 +268,16 @@
             <div>
                 <h3 data-lang="advanced_tab">Advanced</h3>
                 <p class="error" style="color: red; text-align: center;" id="advanced_error"></p>
-                
+
+                <!-- MUSIC URL -->
+                <p>
+                    <label for="music_url" data-lang="music_url">Custom MUSIC URL:</label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="text" id="music_url" name="music_url" style="flex: 1;">
+                        <button type="button" onclick="clearMusicUrl()" style="padding: 5px 10px; border: 1px solid #ccc; border-radius: 3px; background-color: #f0f0f0; cursor: pointer;">❌</button>
+                    </div>
+                </p>
+
                 <!-- OTA URL -->
                 <p>
                     <label for="ota_url" data-lang="ota_url">Custom OTA URL:</label>
@@ -466,6 +475,7 @@
                 scanning: 'Scanning...',
                 wifi_tab: 'Wi-Fi Config',
                 advanced_tab: 'Advanced',
+                music_url: 'Custom MUSIC URL:',
                 ota_url: 'Custom OTA URL:',
                 max_tx_power: 'Wi-Fi Max TX Power:',
                 remember_bssid: 'Remember BSSID when connecting to Wi-Fi',
@@ -538,6 +548,7 @@
                 scanning: 'Nag-scan...',
                 wifi_tab: 'Pagsasaayos ng Wi-Fi',
                 advanced_tab: 'Advanced',
+                music_url: 'Custom MUSIC URL:',
                 ota_url: 'Custom OTA URL:',
                 max_tx_power: 'Wi-Fi Max TX Power:',
                 remember_bssid: 'Tandaan ang BSSID kapag kumokonekta sa Wi-Fi',
@@ -970,6 +981,7 @@
                 scanning: 'Đang quét...',
                 wifi_tab: 'Cấu hình Wi-Fi',
                 advanced_tab: 'Tùy chọn nâng cao',
+                music_url: 'Địa chỉ MUSIC tùy chỉnh:',
                 ota_url: 'Địa chỉ OTA tùy chỉnh:',
                 max_tx_power: 'Công suất phát Wi-Fi tối đa:',
                 remember_bssid: 'Ghi nhớ BSSID khi kết nối với Wi-Fi',
@@ -988,6 +1000,7 @@
                 scanning: '扫描中...',
                 wifi_tab: 'Wi-Fi 配置',
                 advanced_tab: '高级选项',
+                music_url: '自定义 MUSIC 地址:',
                 ota_url: '自定义 OTA 地址:',
                 max_tx_power: 'Wi-Fi 最大发射功率:',
                 remember_bssid: '连接 Wi-Fi 时记住 BSSID',
@@ -1332,6 +1345,7 @@
             advancedError.textContent = '';
 
             const config = {
+                music_url: document.getElementById('music_url').value,
                 ota_url: document.getElementById('ota_url').value,
                 max_tx_power: parseInt(document.getElementById('max_tx_power').value),
                 remember_bssid: document.getElementById('remember_bssid').checked,
@@ -1403,6 +1417,9 @@
                 const response = await fetch('/advanced/config');
                 const data = await response.json();
                 
+                if (data.music_url) {
+                    document.getElementById('music_url').value = data.music_url;
+                }
                 if (data.ota_url) {
                     document.getElementById('ota_url').value = data.ota_url;
                 }
@@ -1418,6 +1435,13 @@
             } catch (error) {
                 console.error('Error loading advanced config:', error);
             }
+        }
+
+        /**
+         * Clear MUSIC URL input field
+         */
+        function clearMusicUrl() {
+            document.getElementById('music_url').value = '';
         }
 
         /**

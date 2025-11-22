@@ -15,7 +15,6 @@
 #include <cJSON.h>
 #include <esp_smartconfig.h>
 #include "ssid_manager.h"
-#include "sdkconfig.h"
 
 #define TAG "WifiConfigurationAp"
 
@@ -177,6 +176,14 @@ void WifiConfigurationAp::StartAccessPoint()
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("wifi", NVS_READONLY, &nvs);
     if (err == ESP_OK) {
+        // 读取MUSIC URL
+        char music_url[128] = {0};
+        size_t music_url_size = sizeof(music_url);
+        err = nvs_get_str(nvs, "music_url", music_url, &music_url_size);
+        if (err == ESP_OK) {
+            music_url_ = music_url;
+        }
+
         // 读取OTA URL
         char ota_url[256] = {0};
         size_t ota_url_size = sizeof(ota_url);
@@ -522,6 +529,9 @@ void WifiConfigurationAp::StartWebServer()
             }
 
             // 添加配置项到JSON
+            if (!this_->music_url_.empty()) {
+                cJSON_AddStringToObject(json, "music_url", this_->music_url_.c_str());
+            }
             if (!this_->ota_url_.empty()) {
                 cJSON_AddStringToObject(json, "ota_url", this_->ota_url_.c_str());
             }
@@ -597,6 +607,16 @@ void WifiConfigurationAp::StartWebServer()
                 return ESP_FAIL;
             }
 
+            // 保存MUSIC URL
+            cJSON *music_url = cJSON_GetObjectItem(json, "music_url");
+            if (cJSON_IsString(music_url) && music_url->valuestring) {
+                this_->music_url_ = music_url->valuestring;
+                err = nvs_set_str(nvs, "music_url", this_->music_url_.c_str());
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to save MUSIC URL: %d", err);
+                }
+            }
+
             // 保存OTA URL
             cJSON *ota_url = cJSON_GetObjectItem(json, "ota_url");
             if (cJSON_IsString(ota_url) && ota_url->valuestring) {
@@ -658,8 +678,10 @@ void WifiConfigurationAp::StartWebServer()
             httpd_resp_set_hdr(req, "Connection", "close");
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
 
-            ESP_LOGI(TAG, "Saved settings: ota_url=%s, max_tx_power=%d, remember_bssid=%d, sleep_mode=%d",
-                this_->ota_url_.c_str(), this_->max_tx_power_, this_->remember_bssid_, this_->sleep_mode_);
+            ESP_LOGI(TAG, "Save music_url=%s", this_->music_url_.c_str());
+            ESP_LOGI(TAG, "Save ota_url=%s", this_->ota_url_.c_str());
+            ESP_LOGI(TAG, "Saved settings: max_tx_power=%d, remember_bssid=%d, sleep_mode=%d",
+                this_->max_tx_power_, this_->remember_bssid_, this_->sleep_mode_);
             return ESP_OK;
         },
         .user_ctx = this
@@ -706,18 +728,8 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
     }
     ESP_LOGI(TAG, "Connecting to WiFi %s", ssid.c_str());
 
-    // Wait for the connection to complete for 10 or 25 seconds
-    EventBits_t bits = xEventGroupWaitBits(
-        event_group_,
-        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-        pdTRUE,
-        pdFALSE,
-#ifdef CONFIG_SOC_WIFI_SUPPORT_5G
-        pdMS_TO_TICKS(25000)
-#else
-        pdMS_TO_TICKS(10000)
-#endif
-    );
+    // Wait for the connection to complete for 5 seconds
+    EventBits_t bits = xEventGroupWaitBits(event_group_, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
     is_connecting_ = false;
 
     if (bits & WIFI_CONNECTED_BIT) {
