@@ -707,6 +707,22 @@
                         <p class="error" id="advanced_error"></p>
 
                         <p>
+                            <label for="weather_api_key" data-lang="weather_api_key">Custom WEATHER API Key:</label>
+                            <div style="display:flex;align-items:center;gap:10px;">
+                                <input type="text" id="weather_api_key" name="weather_api_key" placeholder="Nhập API KEY từ https://openweathermap.org/api" style="flex:1;">
+                                <button type="button" onclick="clearWeatherApiKey()" style="padding:5px 10px;border:1px solid rgba(255,255,255,0.25);border-radius:8px;background:rgba(0,0,0,0.4);color:#fff;cursor:pointer;">❌</button>
+                            </div>
+                        </p>
+
+                        <p>
+                            <label for="weather_city" data-lang="weather_city">Custom WEATHER City:</label>
+                            <div style="display:flex;align-items:center;gap:10px;">
+                                <input type="text" id="weather_city" name="weather_city" placeholder="Để trống hoặc nhập tên thành phố" style="flex:1;">
+                                <button type="button" onclick="clearWeatherCity()" style="padding:5px 10px;border:1px solid rgba(255,255,255,0.25);border-radius:8px;background:rgba(0,0,0,0.4);color:#fff;cursor:pointer;">❌</button>
+                            </div>
+                        </p>
+
+                        <p>
                             <label for="music_url" data-lang="music_url">Custom MUSIC URL:</label>
                             <div style="display:flex;align-items:center;gap:10px;">
                                 <input type="text" id="music_url" name="music_url" style="flex:1;">
@@ -966,6 +982,8 @@
                 scanning: 'Scanning...',
                 wifi_tab: 'Wi-Fi Config',
                 advanced_tab: 'Advanced',
+                weather_API_key: 'Custom Weather API Key:',
+                weather_city: 'Custom Weather City:',
                 music_url: 'Custom MUSIC URL:',
                 ota_url: 'Custom OTA URL:',
                 max_tx_power: 'Wi-Fi Max TX Power:',
@@ -1039,7 +1057,6 @@
                 scanning: 'Nag-scan...',
                 wifi_tab: 'Pagsasaayos ng Wi-Fi',
                 advanced_tab: 'Advanced',
-                music_url: 'Custom MUSIC URL:',
                 ota_url: 'Custom OTA URL:',
                 max_tx_power: 'Wi-Fi Max TX Power:',
                 remember_bssid: 'Tandaan ang BSSID kapag kumokonekta sa Wi-Fi',
@@ -1472,6 +1489,8 @@
                 scanning: 'Đang quét...',
                 wifi_tab: 'Cấu hình Wi-Fi',
                 advanced_tab: 'Tùy chọn nâng cao',
+                weather_API_key: 'Khóa API Thời tiết tùy chỉnh:',
+                weather_city: 'Thành phố Thời tiết tùy chỉnh:',
                 music_url: 'Địa chỉ MUSIC tùy chỉnh:',
                 ota_url: 'Địa chỉ OTA tùy chỉnh:',
                 max_tx_power: 'Công suất phát Wi-Fi tối đa:',
@@ -1491,6 +1510,8 @@
                 scanning: '扫描中...',
                 wifi_tab: 'Wi-Fi 配置',
                 advanced_tab: '高级选项',
+                weather_API_key: '自定义天气 API 密钥:',
+                weather_city: '自定义天气城市:',
                 music_url: '自定义 MUSIC 地址:',
                 ota_url: '自定义 OTA 地址:',
                 max_tx_power: 'Wi-Fi 最大发射功率:',
@@ -1712,6 +1733,8 @@
             advancedButton.disabled = true;
             advancedError.textContent = '';
             const config = {
+                weather_api_key: document.getElementById('weather_api_key').value,
+                weather_city: document.getElementById('weather_city').value,
                 music_url: document.getElementById('music_url').value,
                 ota_url: document.getElementById('ota_url').value,
                 max_tx_power: parseInt(document.getElementById('max_tx_power').value),
@@ -1762,6 +1785,12 @@
             try {
                 const response = await fetch('/advanced/config');
                 const data = await response.json();
+                if (data.weather_api_key) {
+                    document.getElementById('weather_api_key').value = data.weather_api_key;
+                }
+                if (data.weather_city) {
+                    document.getElementById('weather_city').value = data.weather_city;
+                }
                 if (data.music_url) {
                     document.getElementById('music_url').value = data.music_url;
                 }
@@ -1779,6 +1808,14 @@
                 }
             } catch (e) {
             }
+        }
+
+        function clearWeatherApiKey() {
+            document.getElementById('weather_api_key').value = '';
+        }
+
+        function clearWeatherCity() {
+            document.getElementById('weather_city').value = '';
         }
 
         function clearMusicUrl() {

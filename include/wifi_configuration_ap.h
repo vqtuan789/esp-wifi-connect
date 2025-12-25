@@ -49,9 +49,11 @@ private:
     esp_netif_t* ap_netif_ = nullptr;
     std::vector<wifi_ap_record_t> ap_records_;
 
-    // 高级配置项
+    // Advanced configuration items
     std::string music_url_;
     std::string ota_url_;
+    std::string weather_api_key_;
+    std::string weather_city_;
     int8_t max_tx_power_;
     bool remember_bssid_;
     bool sleep_mode_;

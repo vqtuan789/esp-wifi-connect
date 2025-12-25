@@ -32,7 +32,7 @@ WifiConfigurationAp& WifiConfigurationAp::GetInstance() {
 WifiConfigurationAp::WifiConfigurationAp()
 {
     event_group_ = xEventGroupCreate();
-    language_ = "zh-CN";
+    language_ = "vi-VN";
     sleep_mode_ = false;
 }
 
@@ -121,7 +121,6 @@ std::string WifiConfigurationAp::GetSsid()
 
 std::string WifiConfigurationAp::GetWebServerUrl()
 {
-    // http://192.168.4.1
     return "http://192.168.4.1";
 }
 
@@ -172,11 +171,27 @@ void WifiConfigurationAp::StartAccessPoint()
 
     ESP_LOGI(TAG, "Access Point started with SSID %s", ssid.c_str());
 
-    // 加载高级配置
+    // Load advanced configuration
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("wifi", NVS_READONLY, &nvs);
     if (err == ESP_OK) {
-        // 读取MUSIC URL
+        // Load WEATHER API Key
+        char weather_api_key[64] = {0};
+        size_t weather_api_key_size = sizeof(weather_api_key);
+        err = nvs_get_str(nvs, "weather_api_key", weather_api_key, &weather_api_key_size);
+        if (err == ESP_OK) {
+            weather_api_key_ = weather_api_key;
+        }
+
+        // Load WEATHER City
+        char weather_city[64] = {0};
+        size_t weather_city_size = sizeof(weather_city);
+        err = nvs_get_str(nvs, "weather_city", weather_city, &weather_city_size);
+        if (err == ESP_OK) {
+            weather_city_ = weather_city;
+        }
+
+        // Load MUSIC URL
         char music_url[128] = {0};
         size_t music_url_size = sizeof(music_url);
         err = nvs_get_str(nvs, "music_url", music_url, &music_url_size);
@@ -184,7 +199,7 @@ void WifiConfigurationAp::StartAccessPoint()
             music_url_ = music_url;
         }
 
-        // 读取OTA URL
+        // Load OTA URL
         char ota_url[256] = {0};
         size_t ota_url_size = sizeof(ota_url);
         err = nvs_get_str(nvs, "ota_url", ota_url, &ota_url_size);
@@ -192,7 +207,7 @@ void WifiConfigurationAp::StartAccessPoint()
             ota_url_ = ota_url;
         }
 
-        // 读取WiFi功率
+        // Load WiFi max tx power
         err = nvs_get_i8(nvs, "max_tx_power", &max_tx_power_);
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "WiFi max tx power from NVS: %d", max_tx_power_);
@@ -201,22 +216,22 @@ void WifiConfigurationAp::StartAccessPoint()
             esp_wifi_get_max_tx_power(&max_tx_power_);
         }
 
-        // 读取BSSID记忆设置
+        // Load BSSID remember setting
         uint8_t remember_bssid = 0;
         err = nvs_get_u8(nvs, "remember_bssid", &remember_bssid);
         if (err == ESP_OK) {
             remember_bssid_ = remember_bssid != 0;
         } else {
-            remember_bssid_ = false; // 默认值
+            remember_bssid_ = false; // Default value
         }
 
-        // 读取睡眠模式设置
+        // Load sleep mode setting
         uint8_t sleep_mode = 0;
         err = nvs_get_u8(nvs, "sleep_mode", &sleep_mode);
         if (err == ESP_OK) {
             sleep_mode_ = sleep_mode != 0;
         } else {
-            sleep_mode_ = true; // 默认值
+            sleep_mode_ = true; // Default value
         }
 
         nvs_close(nvs);
@@ -362,7 +377,7 @@ void WifiConfigurationAp::StartWebServer()
         .handler = [](httpd_req_t *req) -> esp_err_t {
             char *buf;
             size_t buf_len = req->content_len;
-            if (buf_len > 1024) { // 限制最大请求体大小
+            if (buf_len > 1024) { // Limit the maximum request body size
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
                 return ESP_FAIL;
             }
@@ -385,7 +400,7 @@ void WifiConfigurationAp::StartWebServer()
             }
             buf[ret] = '\0';
 
-            // 解析 JSON 数据
+            // Parse JSON data
             cJSON *json = cJSON_Parse(buf);
             free(buf);
             if (!json) {
@@ -408,7 +423,7 @@ void WifiConfigurationAp::StartWebServer()
                 password_str = password_item->valuestring;
             }
 
-            // 获取当前对象
+            // Get the current object
             auto *this_ = static_cast<WifiConfigurationAp *>(req->user_ctx);
             if (!this_->ConnectToWifi(ssid_str, password_str)) {
                 cJSON_Delete(json);
@@ -418,7 +433,7 @@ void WifiConfigurationAp::StartWebServer()
 
             this_->Save(ssid_str, password_str);
             cJSON_Delete(json);
-            // 设置成功响应
+            // Set success response
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_hdr(req, "Connection", "close");
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
@@ -448,26 +463,26 @@ void WifiConfigurationAp::StartWebServer()
         .handler = [](httpd_req_t *req) -> esp_err_t {
             auto* this_ = static_cast<WifiConfigurationAp*>(req->user_ctx);
             
-            // 设置响应头，防止浏览器缓存
+            // Set response headers to prevent browser caching.
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_hdr(req, "Cache-Control", "no-store");
             httpd_resp_set_hdr(req, "Connection", "close");
-            // 发送响应
+            // Send response
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
             
-            // 创建一个延迟重启任务
+            // Create a delayed reboot task
             ESP_LOGI(TAG, "Rebooting...");
             xTaskCreate([](void *ctx) {
-                // 等待200ms确保HTTP响应完全发送
+                // Wait 200ms to ensure the HTTP response is fully sent
                 vTaskDelay(pdMS_TO_TICKS(200));
-                // 停止Web服务器
+                // Stop the Web server
                 auto* self = static_cast<WifiConfigurationAp*>(ctx);
                 if (self->server_) {
                     httpd_stop(self->server_);
                 }
-                // 再等待100ms确保所有连接都已关闭
+                // Wait another 100ms to ensure all connections are closed
                 vTaskDelay(pdMS_TO_TICKS(100));
-                // 执行重启
+                // Perform reboot
                 esp_restart();
             }, "reboot_task", 4096, this_, 5, NULL);
             
@@ -518,17 +533,23 @@ void WifiConfigurationAp::StartWebServer()
         .uri = "/advanced/config",
         .method = HTTP_GET,
         .handler = [](httpd_req_t *req) -> esp_err_t {
-            // 获取当前对象
+            // Get the current object
             auto *this_ = static_cast<WifiConfigurationAp *>(req->user_ctx);
             
-            // 创建JSON对象
+            // Create JSON object
             cJSON *json = cJSON_CreateObject();
             if (!json) {
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to create JSON");
                 return ESP_FAIL;
             }
 
-            // 添加配置项到JSON
+            // Add configuration items to JSON
+            if (!this_->weather_api_key_.empty()) {
+                cJSON_AddStringToObject(json, "weather_api_key", this_->weather_api_key_.c_str());
+            }
+            if (!this_->weather_city_.empty()) {
+                cJSON_AddStringToObject(json, "weather_city", this_->weather_city_.c_str());
+            }
             if (!this_->music_url_.empty()) {
                 cJSON_AddStringToObject(json, "music_url", this_->music_url_.c_str());
             }
@@ -539,7 +560,7 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddBoolToObject(json, "remember_bssid", this_->remember_bssid_);
             cJSON_AddBoolToObject(json, "sleep_mode", this_->sleep_mode_);
 
-            // 发送JSON响应
+            // Send JSON response
             char *json_str = cJSON_PrintUnformatted(json);
             cJSON_Delete(json);
             if (!json_str) {
@@ -587,7 +608,7 @@ void WifiConfigurationAp::StartWebServer()
             }
             buf[ret] = '\0';
 
-            // 解析JSON数据
+            // Parsing JSON data
             cJSON *json = cJSON_Parse(buf);
             free(buf);
             if (!json) {
@@ -595,10 +616,10 @@ void WifiConfigurationAp::StartWebServer()
                 return ESP_FAIL;
             }
 
-            // 获取当前对象
+            // Get the current object
             auto *this_ = static_cast<WifiConfigurationAp *>(req->user_ctx);
 
-            // 打开NVS
+            // Open NVS
             nvs_handle_t nvs;
             esp_err_t err = nvs_open("wifi", NVS_READWRITE, &nvs);
             if (err != ESP_OK) {
@@ -607,7 +628,27 @@ void WifiConfigurationAp::StartWebServer()
                 return ESP_FAIL;
             }
 
-            // 保存MUSIC URL
+            // Save WEATHER API KEY
+            cJSON *weather_api_key = cJSON_GetObjectItem(json, "weather_api_key");
+            if (cJSON_IsString(weather_api_key) && weather_api_key->valuestring) {
+                this_->weather_api_key_ = weather_api_key->valuestring;
+                err = nvs_set_str(nvs, "weather_api_key", this_->weather_api_key_.c_str());
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to save WEATHER API KEY: %d", err);
+                }
+            }
+
+            // Save WEATHER CITY
+            cJSON *weather_city = cJSON_GetObjectItem(json, "weather_city");
+            if (cJSON_IsString(weather_city) && weather_city->valuestring) {
+                this_->weather_city_ = weather_city->valuestring;
+                err = nvs_set_str(nvs, "weather_city", this_->weather_city_.c_str());
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to save WEATHER CITY: %d", err);
+                }
+            }
+
+            // Save MUSIC URL
             cJSON *music_url = cJSON_GetObjectItem(json, "music_url");
             if (cJSON_IsString(music_url) && music_url->valuestring) {
                 this_->music_url_ = music_url->valuestring;
@@ -617,7 +658,7 @@ void WifiConfigurationAp::StartWebServer()
                 }
             }
 
-            // 保存OTA URL
+            // Save OTA URL
             cJSON *ota_url = cJSON_GetObjectItem(json, "ota_url");
             if (cJSON_IsString(ota_url) && ota_url->valuestring) {
                 this_->ota_url_ = ota_url->valuestring;
@@ -627,7 +668,7 @@ void WifiConfigurationAp::StartWebServer()
                 }
             }
 
-            // 保存WiFi功率
+            // Save WiFi power
             cJSON *max_tx_power = cJSON_GetObjectItem(json, "max_tx_power");
             if (cJSON_IsNumber(max_tx_power)) {
                 this_->max_tx_power_ = max_tx_power->valueint;
@@ -643,7 +684,7 @@ void WifiConfigurationAp::StartWebServer()
                 }
             }
 
-            // 保存BSSID记忆设置
+            // Save BSSID remember setting
             cJSON *remember_bssid = cJSON_GetObjectItem(json, "remember_bssid");
             if (cJSON_IsBool(remember_bssid)) {
                 this_->remember_bssid_ = cJSON_IsTrue(remember_bssid);
@@ -653,7 +694,7 @@ void WifiConfigurationAp::StartWebServer()
                 }
             }
 
-            // 保存睡眠模式设置
+            // Save sleep mode setting
             cJSON *sleep_mode = cJSON_GetObjectItem(json, "sleep_mode");
             if (cJSON_IsBool(sleep_mode)) {
                 this_->sleep_mode_ = cJSON_IsTrue(sleep_mode);
@@ -663,7 +704,7 @@ void WifiConfigurationAp::StartWebServer()
                 }
             }
 
-            // 提交更改
+            // Commit changes
             err = nvs_commit(nvs);
             nvs_close(nvs);
             cJSON_Delete(json);
@@ -673,11 +714,13 @@ void WifiConfigurationAp::StartWebServer()
                 return ESP_FAIL;
             }
 
-            // 发送成功响应
+            // Send success response
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_hdr(req, "Connection", "close");
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
 
+            ESP_LOGI(TAG, "Save weather_api_key=%s", this_->weather_api_key_.c_str());
+            ESP_LOGI(TAG, "Save weather_city=%s", this_->weather_city_.c_str());
             ESP_LOGI(TAG, "Save music_url=%s", this_->music_url_.c_str());
             ESP_LOGI(TAG, "Save ota_url=%s", this_->ota_url_.c_str());
             ESP_LOGI(TAG, "Saved settings: max_tx_power=%d, remember_bssid=%d, sleep_mode=%d",
@@ -698,7 +741,7 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
         return false;
     }
     
-    if (ssid.length() > 32) {  // WiFi SSID 最大长度
+    if (ssid.length() > 32) {  // WiFi SSID maximum length
         ESP_LOGE(TAG, "SSID too long");
         return false;
     }
@@ -769,7 +812,7 @@ void WifiConfigurationAp::WifiEventHandler(void* arg, esp_event_base_t event_bas
         self->ap_records_.resize(ap_num);
         esp_wifi_scan_get_ap_records(&ap_num, self->ap_records_.data());
 
-        // 扫描完成，等待10秒后再次扫描
+        // Scan completed, wait 10 seconds before scanning again
         esp_timer_start_once(self->scan_timer_, 10 * 1000000);
     }
 }
@@ -786,16 +829,16 @@ void WifiConfigurationAp::IpEventHandler(void* arg, esp_event_base_t event_base,
 
 void WifiConfigurationAp::StartSmartConfig()
 {
-    // 注册SmartConfig事件处理器
+    // Register SmartConfig event handler
     ESP_ERROR_CHECK(esp_event_handler_instance_register(SC_EVENT, ESP_EVENT_ANY_ID,
                                                         &WifiConfigurationAp::SmartConfigEventHandler, this, &sc_event_instance_));
 
-    // 初始化SmartConfig配置
+    // Initialize SmartConfig configuration
     smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
     // cfg.esp_touch_v2_enable_crypt = true;
-    // cfg.esp_touch_v2_key = "1234567890123456"; // 设置16字节加密密钥
+    // cfg.esp_touch_v2_key = "1234567890123456"; // Set 16-byte encryption key
 
-    // 启动SmartConfig服务
+    // Start SmartConfig service
     ESP_ERROR_CHECK(esp_smartconfig_start(&cfg));
     ESP_LOGI(TAG, "SmartConfig started");
 }
@@ -821,7 +864,7 @@ void WifiConfigurationAp::SmartConfigEventHandler(void *arg, esp_event_base_t ev
             memcpy(ssid, evt->ssid, sizeof(evt->ssid));
             memcpy(password, evt->password, sizeof(evt->password));
             ESP_LOGI(TAG, "SmartConfig SSID: %s, Password: %s", ssid, password);
-            // 尝试连接WiFi会失败，故不连接
+            // Attempting to connect to WiFi failed, so no connection was made.
             self->Save(ssid, password);
             xTaskCreate([](void *ctx){
                 ESP_LOGI(TAG, "Restarting in 3 second");
@@ -839,30 +882,30 @@ void WifiConfigurationAp::SmartConfigEventHandler(void *arg, esp_event_base_t ev
 }
 
 void WifiConfigurationAp::Stop() {
-    // 停止SmartConfig服务
+    // Stop SmartConfig service
     if (sc_event_instance_) {
         esp_event_handler_instance_unregister(SC_EVENT, ESP_EVENT_ANY_ID, sc_event_instance_);
         sc_event_instance_ = nullptr;
     }
     esp_smartconfig_stop();
 
-    // 停止定时器
+    // Stop timer
     if (scan_timer_) {
         esp_timer_stop(scan_timer_);
         esp_timer_delete(scan_timer_);
         scan_timer_ = nullptr;
     }
 
-    // 停止Web服务器
+    // Stop Web server
     if (server_) {
         httpd_stop(server_);
         server_ = nullptr;
     }
 
-    // 停止DNS服务器
+    // Stop DNS server
     dns_server_.Stop();
 
-    // 注销事件处理器
+    // Unregister event handlers
     if (instance_any_id_) {
         esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id_);
         instance_any_id_ = nullptr;
@@ -872,12 +915,12 @@ void WifiConfigurationAp::Stop() {
         instance_got_ip_ = nullptr;
     }
 
-    // 停止WiFi并重置模式
+    // Stop WiFi and reset mode
     esp_wifi_stop();
     esp_wifi_deinit();
     esp_wifi_set_mode(WIFI_MODE_NULL);
 
-    // 释放网络接口资源
+    // Release network interface resources
     if (ap_netif_) {
         esp_netif_destroy(ap_netif_);
         ap_netif_ = nullptr;
