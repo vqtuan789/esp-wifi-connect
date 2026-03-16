@@ -199,14 +199,6 @@ void WifiConfigurationAp::StartAccessPoint()
             music_url_ = music_url;
         }
 
-        // Load YOUTUBE URL
-        char youtube_url[256] = {0};
-        size_t youtube_url_size = sizeof(youtube_url);
-        err = nvs_get_str(nvs, "youtube_url", youtube_url, &youtube_url_size);
-        if (err == ESP_OK) {
-            youtube_url_ = youtube_url;
-        }
-
         // Load OTA URL
         char ota_url[256] = {0};
         size_t ota_url_size = sizeof(ota_url);
@@ -561,9 +553,6 @@ void WifiConfigurationAp::StartWebServer()
             if (!this_->music_url_.empty()) {
                 cJSON_AddStringToObject(json, "music_url", this_->music_url_.c_str());
             }
-            if (!this_->youtube_url_.empty()) {
-                cJSON_AddStringToObject(json, "youtube_url", this_->youtube_url_.c_str());
-            }
             if (!this_->ota_url_.empty()) {
                 cJSON_AddStringToObject(json, "ota_url", this_->ota_url_.c_str());
             }
@@ -669,16 +658,6 @@ void WifiConfigurationAp::StartWebServer()
                 }
             }
 
-            // Save YOUTUBE URL
-            cJSON *youtube_url = cJSON_GetObjectItem(json, "youtube_url");
-            if (cJSON_IsString(youtube_url) && youtube_url->valuestring) {
-                this_->youtube_url_ = youtube_url->valuestring;
-                err = nvs_set_str(nvs, "youtube_url", this_->youtube_url_.c_str());
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to save YOUTUBE URL: %d", err);
-                }
-            }
-
             // Save OTA URL
             cJSON *ota_url = cJSON_GetObjectItem(json, "ota_url");
             if (cJSON_IsString(ota_url) && ota_url->valuestring) {
@@ -743,7 +722,6 @@ void WifiConfigurationAp::StartWebServer()
             ESP_LOGI(TAG, "Save weather_api_key=%s", this_->weather_api_key_.c_str());
             ESP_LOGI(TAG, "Save weather_city=%s", this_->weather_city_.c_str());
             ESP_LOGI(TAG, "Save music_url=%s", this_->music_url_.c_str());
-            ESP_LOGI(TAG, "Save youtube_url=%s", this_->youtube_url_.c_str());
             ESP_LOGI(TAG, "Save ota_url=%s", this_->ota_url_.c_str());
             ESP_LOGI(TAG, "Saved settings: max_tx_power=%d, remember_bssid=%d, sleep_mode=%d",
                 this_->max_tx_power_, this_->remember_bssid_, this_->sleep_mode_);

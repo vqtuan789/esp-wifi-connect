@@ -51,6 +51,7 @@ private:
 
     // Advanced configuration items
     std::string music_url_;
+    std::string youtube_url_;
     std::string ota_url_;
     std::string weather_api_key_;
     std::string weather_city_;
