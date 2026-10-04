@@ -1,6 +1,9 @@
 #include "wifi_configuration_ap.h"
 #include <cstdio>
+#include <cstdint>
+#include <cstring>
 #include <memory>
+#include <new>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <esp_err.h>
@@ -20,6 +23,111 @@
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
+
+namespace {
+constexpr const char* kBankNamespace = "bank";
+constexpr const char* kBankDeviceIdKey = "device_id";
+constexpr const char* kBankSepayKey = "sepay_key";
+constexpr const char* kBankEcLimitKey = "ec_limit";
+constexpr const char* kBankWssUrlKey = "wss_url";
+constexpr const char* kBankNatUrlKey = "nat_url";
+constexpr const char* kBankSerialLogKey = "serial_log";
+constexpr int32_t kBankDefaultEcLimit = 50;
+constexpr size_t kBankMaxSecretLen = 192;
+constexpr size_t kBankMaxUrlLen = 255;
+
+std::string ReadNvsString(nvs_handle_t nvs, const char* key) {
+    size_t len = 0;
+    if (nvs_get_str(nvs, key, nullptr, &len) != ESP_OK || len == 0) {
+        return {};
+    }
+    std::string value;
+    value.resize(len);
+    if (nvs_get_str(nvs, key, value.data(), &len) != ESP_OK) {
+        return {};
+    }
+    while (!value.empty() && value.back() == '\0') {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::string BuildBankDeviceId() {
+    uint8_t mac[6] = {0};
+    if (esp_wifi_get_mac(WIFI_IF_STA, mac) != ESP_OK) {
+        return {};
+    }
+    char mac_hex[13];
+    snprintf(mac_hex, sizeof(mac_hex), "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    uint64_t hash = 1469598103934665603ULL;
+    constexpr uint64_t kFnvPrime = 1099511628211ULL;
+    constexpr char kDomain[] = "XIAOZHI_BANK_V1|";
+    for (unsigned char ch : kDomain) {
+        if (ch == '\0') break;
+        hash ^= ch;
+        hash *= kFnvPrime;
+    }
+    for (const char* p = mac_hex; *p; ++p) {
+        hash ^= static_cast<unsigned char>(*p);
+        hash *= kFnvPrime;
+    }
+
+    const uint64_t bank_id = hash & 0x0000FFFFFFFFFFFFULL;
+    char out[13];
+    snprintf(out, sizeof(out), "%012llX", static_cast<unsigned long long>(bank_id));
+    return std::string(out);
+}
+
+std::string EnsureBankDeviceId(nvs_handle_t nvs) {
+    std::string current = ReadNvsString(nvs, kBankDeviceIdKey);
+    if (current.size() == 12) {
+        return current;
+    }
+    current = BuildBankDeviceId();
+    if (!current.empty()) {
+        nvs_set_str(nvs, kBankDeviceIdKey, current.c_str());
+    }
+    return current;
+}
+
+bool StartsWith(const std::string& value, const char* prefix) {
+    return value.rfind(prefix, 0) == 0;
+}
+
+bool EndsWith(const std::string& value, const char* suffix) {
+    const size_t suffix_len = strlen(suffix);
+    return value.size() >= suffix_len &&
+           value.compare(value.size() - suffix_len, suffix_len, suffix) == 0;
+}
+
+bool HasControlChars(const std::string& value) {
+    for (unsigned char ch : value) {
+        if (ch < 0x20 || ch == 0x7F) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsValidBankWssUrl(const std::string& value) {
+    if (value.empty()) return true;  // Blank = LoaBank-compatible built-in pool.
+    return value.size() <= kBankMaxUrlLen && StartsWith(value, "wss://") && !HasControlChars(value);
+}
+
+bool IsValidBankNatUrl(const std::string& value) {
+    if (value.empty()) return true;  // Blank = user has not configured NAT.
+    return value.size() <= kBankMaxUrlLen && StartsWith(value, "https://") &&
+           EndsWith(value, "/sepay") && !HasControlChars(value);
+}
+
+void ApplyRuntimeSerialLogPolicy(bool enabled) {
+    // Best-effort application logging control. ROM/bootloader and direct printf()
+    // output from other modules are outside esp_log runtime filtering.
+    esp_log_level_set("*", enabled ? ESP_LOG_INFO : ESP_LOG_NONE);
+}
+}  // namespace
 
 extern const char index_html_start[] asm("_binary_wifi_configuration_html_start");
 extern const char done_html_start[] asm("_binary_wifi_configuration_done_html_start");
@@ -250,7 +358,7 @@ void WifiConfigurationAp::StartWebServer()
 {
     // Start the web server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 24;
+    config.max_uri_handlers = 28;
     config.uri_match_fn = httpd_uri_match_wildcard;
     // 5G Network takes longer to connect
     config.recv_wait_timeout = 15;
@@ -535,6 +643,175 @@ void WifiConfigurationAp::StartWebServer()
         };
         ESP_ERROR_CHECK(httpd_register_uri_handler(server_, &redirect_uri));
     }
+
+    // Register the /bank/config URI. Bank secrets are write-only: the API
+    // key is never returned to the browser; only the masked marker is exposed.
+    httpd_uri_t bank_config = {
+        .uri = "/bank/config",
+        .method = HTTP_GET,
+        .handler = [](httpd_req_t *req) -> esp_err_t {
+            nvs_handle_t nvs;
+            esp_err_t err = nvs_open(kBankNamespace, NVS_READWRITE, &nvs);
+            if (err != ESP_OK) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to open Bank NVS");
+                return ESP_FAIL;
+            }
+
+            std::string device_id = EnsureBankDeviceId(nvs);
+            std::string api_key = ReadNvsString(nvs, kBankSepayKey);
+            std::string wss_url = ReadNvsString(nvs, kBankWssUrlKey);
+            std::string nat_url = ReadNvsString(nvs, kBankNatUrlKey);
+            int32_t ec_limit = kBankDefaultEcLimit;
+            uint8_t serial_log = 1;
+            nvs_get_i32(nvs, kBankEcLimitKey, &ec_limit);
+            nvs_get_u8(nvs, kBankSerialLogKey, &serial_log);
+            nvs_commit(nvs);
+            nvs_close(nvs);
+
+            if (ec_limit < 0 || ec_limit > 1000000000) {
+                ec_limit = kBankDefaultEcLimit;
+            }
+
+            cJSON *json = cJSON_CreateObject();
+            if (!json) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to create JSON");
+                return ESP_FAIL;
+            }
+            cJSON_AddStringToObject(json, "device_id", device_id.c_str());
+            cJSON_AddBoolToObject(json, "api_key_present", !api_key.empty());
+            cJSON_AddStringToObject(json, "sepay_api_key", api_key.empty() ? "" : "****");
+            cJSON_AddNumberToObject(json, "ec_limit", ec_limit);
+            cJSON_AddStringToObject(json, "wss_url", wss_url.c_str());
+            cJSON_AddStringToObject(json, "nat_url", nat_url.c_str());
+            cJSON_AddBoolToObject(json, "serial_log", serial_log != 0);
+
+            char *json_str = cJSON_PrintUnformatted(json);
+            cJSON_Delete(json);
+            if (!json_str) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to print JSON");
+                return ESP_FAIL;
+            }
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+            httpd_resp_set_hdr(req, "Connection", "close");
+            httpd_resp_send(req, json_str, strlen(json_str));
+            free(json_str);
+            return ESP_OK;
+        },
+        .user_ctx = this
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server_, &bank_config));
+
+    // Register the /bank/submit URI.
+    httpd_uri_t bank_submit = {
+        .uri = "/bank/submit",
+        .method = HTTP_POST,
+        .handler = [](httpd_req_t *req) -> esp_err_t {
+            const size_t buf_len = req->content_len;
+            if (buf_len == 0 || buf_len > 1024) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Bank payload size");
+                return ESP_FAIL;
+            }
+
+            std::unique_ptr<char[]> buf(new (std::nothrow) char[buf_len + 1]);
+            if (!buf) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate memory");
+                return ESP_FAIL;
+            }
+            int received = httpd_req_recv(req, buf.get(), buf_len);
+            if (received <= 0) {
+                if (received == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
+                else httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive request");
+                return ESP_FAIL;
+            }
+            buf[received] = '\0';
+
+            cJSON *json = cJSON_Parse(buf.get());
+            if (!json) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+                return ESP_FAIL;
+            }
+
+            cJSON *api_item = cJSON_GetObjectItemCaseSensitive(json, "sepay_api_key");
+            cJSON *ec_item = cJSON_GetObjectItemCaseSensitive(json, "ec_limit");
+            cJSON *wss_item = cJSON_GetObjectItemCaseSensitive(json, "wss_url");
+            cJSON *nat_item = cJSON_GetObjectItemCaseSensitive(json, "nat_url");
+            cJSON *log_item = cJSON_GetObjectItemCaseSensitive(json, "serial_log");
+
+            if (!cJSON_IsString(api_item) || !api_item->valuestring ||
+                !cJSON_IsNumber(ec_item) ||
+                !cJSON_IsString(wss_item) || !wss_item->valuestring ||
+                !cJSON_IsString(nat_item) || !nat_item->valuestring ||
+                !cJSON_IsBool(log_item)) {
+                cJSON_Delete(json);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing/invalid Bank fields");
+                return ESP_FAIL;
+            }
+
+            std::string api_key = api_item->valuestring;
+            std::string wss_url = wss_item->valuestring;
+            std::string nat_url = nat_item->valuestring;
+            const double ec_number = ec_item->valuedouble;
+            const int64_t ec_limit = static_cast<int64_t>(ec_number);
+            const bool serial_log = cJSON_IsTrue(log_item);
+
+            if (api_key.size() > kBankMaxSecretLen || HasControlChars(api_key) ||
+                ec_number != static_cast<double>(ec_limit) || ec_limit < 0 || ec_limit > 1000000000LL ||
+                !IsValidBankWssUrl(wss_url) || !IsValidBankNatUrl(nat_url)) {
+                cJSON_Delete(json);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Bank configuration");
+                return ESP_FAIL;
+            }
+
+            nvs_handle_t nvs;
+            esp_err_t err = nvs_open(kBankNamespace, NVS_READWRITE, &nvs);
+            if (err != ESP_OK) {
+                cJSON_Delete(json);
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to open Bank NVS");
+                return ESP_FAIL;
+            }
+
+            const std::string device_id = EnsureBankDeviceId(nvs);
+            const bool api_unchanged = (api_key == "****");
+            if (!api_unchanged) {
+                if (api_key.empty()) {
+                    err = nvs_erase_key(nvs, kBankSepayKey);
+                    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+                } else {
+                    err = nvs_set_str(nvs, kBankSepayKey, api_key.c_str());
+                }
+            }
+            if (err == ESP_OK) err = nvs_set_i32(nvs, kBankEcLimitKey, static_cast<int32_t>(ec_limit));
+            if (err == ESP_OK) err = nvs_set_str(nvs, kBankWssUrlKey, wss_url.c_str());
+            if (err == ESP_OK) err = nvs_set_str(nvs, kBankNatUrlKey, nat_url.c_str());
+            if (err == ESP_OK) err = nvs_set_u8(nvs, kBankSerialLogKey, serial_log ? 1 : 0);
+            if (err == ESP_OK) err = nvs_commit(nvs);
+            nvs_close(nvs);
+            cJSON_Delete(json);
+
+            if (err != ESP_OK) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save Bank configuration");
+                return ESP_FAIL;
+            }
+
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+            httpd_resp_set_hdr(req, "Connection", "close");
+            httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
+
+            ESP_LOGI(TAG, "[BANK_CONFIG] saved device_id=%s api_key=%s ec=%lld wss=%s nat=%s serial_log=%s",
+                     device_id.c_str(),
+                     api_unchanged ? "unchanged" : (api_key.empty() ? "cleared" : "replaced"),
+                     static_cast<long long>(ec_limit),
+                     wss_url.empty() ? "default_pool" : "custom",
+                     nat_url.empty() ? "blank" : "configured",
+                     serial_log ? "enabled" : "disabled");
+            ApplyRuntimeSerialLogPolicy(serial_log);
+            return ESP_OK;
+        },
+        .user_ctx = this
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server_, &bank_submit));
 
     // Register the /advanced/config URI
     httpd_uri_t advanced_config = {

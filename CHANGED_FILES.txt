@@ -1,0 +1,5 @@
+assets/wifi_configuration.html
+wifi_configuration_ap.cc
+idf_component.yml
+Project_Handoff.md
+CHANGED_FILES.txt

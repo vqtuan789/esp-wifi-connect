@@ -670,6 +670,7 @@
             <div class="tabs">
                 <div class="tab active" onclick="switchTab('wifi')" data-lang="wifi_tab">Wi-Fi Config</div>
                 <div class="tab" onclick="switchTab('advanced')" data-lang="advanced_tab">Advanced</div>
+                <div class="tab" onclick="switchTab('bank')" data-lang="bank_tab">🏦 Bank</div>
             </div>
 
             <div id="wifi-tab" class="tab-content active">
@@ -698,6 +699,57 @@
                     </form>
                     <p id="ap_list"></p>
                 </div>
+            </div>
+
+            <div id="bank-tab" class="tab-content">
+                <form action="/bank/submit" method="post" onsubmit="submitBankForm(event)">
+                    <div>
+                        <h3 data-lang="bank_title">🏦 Xiaozhi Bank</h3>
+                        <p class="error" id="bank_error"></p>
+
+                        <p>
+                            <label for="bank_device_id" data-lang="bank_device_id">Bank Device ID:</label>
+                            <input type="text" id="bank_device_id" name="bank_device_id" readonly value="">
+                        </p>
+
+                        <p>
+                            <label for="bank_sepay_api_key" data-lang="bank_sepay_api_key">SePay API Key:</label>
+                            <input type="password" id="bank_sepay_api_key" name="bank_sepay_api_key"
+                                   autocomplete="new-password"
+                                   placeholder="Blank = not configured; **** = key already saved">
+                            <small data-lang="bank_api_hint">Keep **** to preserve the saved key; delete all **** to clear it; enter a new value to replace it.</small>
+                        </p>
+
+                        <p>
+                            <label for="bank_ec_limit" data-lang="bank_ec_limit">EC monthly countdown start:</label>
+                            <input type="number" id="bank_ec_limit" name="bank_ec_limit" min="0" max="1000000000" value="50">
+                        </p>
+
+                        <p>
+                            <label for="bank_wss_url" data-lang="bank_wss_url">WSS Server:</label>
+                            <input type="text" id="bank_wss_url" name="bank_wss_url"
+                                   placeholder="Blank = LoaBank default 2-domain WSS pool">
+                        </p>
+
+                        <p>
+                            <label for="bank_nat_url" data-lang="bank_nat_url">NAT public webhook URL:</label>
+                            <input type="text" id="bank_nat_url" name="bank_nat_url"
+                                   placeholder="https://domain:port/sepay (optional)">
+                            <small data-lang="bank_nat_hint">Blank only means the user has not configured NAT. The Bank /sepay WebServer is not disabled by this field.</small>
+                        </p>
+
+                        <p style="display:flex;align-items:center;gap:10px;">
+                            <label for="bank_serial_log" style="margin:0;">
+                                <span data-lang="bank_serial_log">⚙️ Serial Monitor log</span>
+                            </label>
+                            <input type="checkbox" id="bank_serial_log" name="bank_serial_log" checked>
+                        </p>
+
+                        <p style="text-align:center;margin-top:12px;">
+                            <input type="submit" value="Save Bank" id="bank_button" data-lang-value="bank_save">
+                        </p>
+                    </div>
+                </form>
             </div>
 
             <div id="advanced-tab" class="tab-content">
@@ -990,6 +1042,17 @@
                 scanning: 'Scanning...',
                 wifi_tab: 'Wi-Fi Config',
                 advanced_tab: 'Advanced',
+                bank_tab: '🏦 Bank',
+                bank_title: '🏦 Xiaozhi Bank',
+                bank_device_id: 'Bank Device ID:',
+                bank_sepay_api_key: 'SePay API Key:',
+                bank_api_hint: 'Keep **** to preserve the saved key; delete all **** to clear it; enter a new value to replace it.',
+                bank_ec_limit: 'EC monthly countdown start:',
+                bank_wss_url: 'WSS Server:',
+                bank_nat_url: 'NAT public webhook URL:',
+                bank_nat_hint: 'Blank does not disable the /sepay WebServer; it only means NAT is not configured.',
+                bank_serial_log: '⚙️ Serial Monitor log',
+                bank_save: 'Save Bank',
                 weather_API_key: 'Custom Weather API Key:',
                 weather_city: 'Custom Weather City:',
                 music_url: 'Custom MUSIC URL:',
@@ -1498,6 +1561,17 @@
                 scanning: 'Đang quét...',
                 wifi_tab: 'Cấu hình Wi-Fi',
                 advanced_tab: 'Tùy chọn nâng cao',
+                bank_tab: '🏦 Bank',
+                bank_title: '🏦 Cấu hình Xiaozhi Bank',
+                bank_device_id: 'CHIP ID riêng của Bank:',
+                bank_sepay_api_key: 'KEY API SePay:',
+                bank_api_hint: 'Giữ nguyên **** = giữ key cũ; xóa hết **** thành trống = xóa key; nhập chuỗi mới = thay key.',
+                bank_ec_limit: 'EC đầu tháng:',
+                bank_wss_url: 'Link Server WSS:',
+                bank_nat_url: 'Link NAT Webhook công khai:',
+                bank_nat_hint: 'Để trống chỉ có nghĩa người dùng chưa NAT; WebServer /sepay của Bank không bị khóa bởi ô này.',
+                bank_serial_log: '⚙️ Log Serial Monitor',
+                bank_save: 'Lưu Bank',
                 weather_API_key: 'Khóa API Thời tiết tùy chỉnh:',
                 weather_city: 'Thành phố Thời tiết tùy chỉnh:',
                 music_url: 'Địa chỉ MUSIC tùy chỉnh:',
@@ -1772,6 +1846,54 @@
             }
         }
 
+        async function submitBankForm(event) {
+            event.preventDefault();
+            const button = document.getElementById('bank_button');
+            const error = document.getElementById('bank_error');
+            button.disabled = true;
+            error.textContent = '';
+            const config = {
+                sepay_api_key: document.getElementById('bank_sepay_api_key').value,
+                ec_limit: Number(document.getElementById('bank_ec_limit').value),
+                wss_url: document.getElementById('bank_wss_url').value.trim(),
+                nat_url: document.getElementById('bank_nat_url').value.trim(),
+                serial_log: document.getElementById('bank_serial_log').checked
+            };
+            try {
+                const response = await fetch('/bank/submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                if (!response.ok) {
+                    throw new Error((await response.text()) || 'Save failed');
+                }
+                const data = await response.json();
+                if (!data.success) throw new Error(data.error || 'Save failed');
+                await loadBankConfig();
+                showToast('Bank configuration saved');
+            } catch (err) {
+                error.textContent = err.message;
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        async function loadBankConfig() {
+            try {
+                const response = await fetch('/bank/config', { cache: 'no-store' });
+                if (!response.ok) return;
+                const data = await response.json();
+                document.getElementById('bank_device_id').value = data.device_id || '';
+                document.getElementById('bank_sepay_api_key').value = data.api_key_present ? '****' : '';
+                document.getElementById('bank_ec_limit').value = Number.isFinite(data.ec_limit) ? data.ec_limit : 50;
+                document.getElementById('bank_wss_url').value = data.wss_url || '';
+                document.getElementById('bank_nat_url').value = data.nat_url || '';
+                document.getElementById('bank_serial_log').checked = data.serial_log !== false;
+            } catch (e) {
+            }
+        }
+
         function switchTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(content => {
                 content.classList.remove('active');
@@ -1856,6 +1978,7 @@
             loadSavedList();
             loadAPList();
             loadAdvancedConfig();
+            loadBankConfig();
         });
 
         window.addEventListener('pageshow', (event) => {
