@@ -1,6 +1,6 @@
 # Project_Handoff.md - esp-wifi-connect / Xiaozhi Bank
 
-> **Status:** PHASE 1.0 BANK TAB IMPLEMENTED - BUILD/HARDWARE PENDING
+> **Status:** v1.1.1 CAPTIVE JSON/BANK SAVE FIX IMPLEMENTED - STATIC 7/7 PASS - USER BUILD/FIELD PENDING
 
 ## Vai trò
 
@@ -32,7 +32,7 @@ Changed component source:
 
 - `assets/wifi_configuration.html`: new `🏦 Bank` tab and masked-secret UX.
 - `wifi_configuration_ap.cc`: `/bank/config`, `/bank/submit`, separate `bank` NVS, validation, Serial log toggle.
-- `idf_component.yml`: component version `1.1.0`.
+- `idf_component.yml`: component version `1.1.1`.
 
 Security contract:
 
@@ -42,4 +42,21 @@ Security contract:
 - new text = replace.
 - secret value is never printed in Bank save log.
 
-Build note: publish/tag this repo as `v1.1.0` before building OTA_V1 `2.0.5.07`.
+Build note: publish/tag this repo as `v1.1.1` before clean-building OTA_V1 `2.0.5.30`; firmware manifest now requires that tag.
+
+## v1.1.1 - 2026-11-04
+
+USER field screenshot showed GET `/bank/config` working but Save Bank reporting browser `Failed to fetch`.
+
+RCA: v1.1.0 called `httpd_req_recv()` only once for JSON POST bodies. HTTP/TCP may split a body across receives, so partial JSON could be parsed and the handler could close with `ESP_FAIL`.
+
+Implemented:
+
+- shared bounded `ReadRequestBody()` loops until full `content_len` is received; up to 3 receive timeouts are tolerated;
+- `/submit`, `/bank/submit`, `/advanced/submit` all use the full-body pattern;
+- Bank errors send a complete HTTP response and return `ESP_OK`;
+- Bank save logs only state/reason through `[BANK_CONFIG_AP]`, never plaintext secret;
+- browser retries Bank Save exactly once only when `fetch()` itself fails at network level; normal HTTP 4xx/5xx responses are not blindly retried;
+- `preflight_esp_wifi_connect.py` guards this contract.
+
+Security semantics are unchanged: `****`=keep existing key, blank=clear, new text=replace; plaintext SePay key is never returned or logged.

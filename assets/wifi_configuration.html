@@ -1860,11 +1860,20 @@
                 serial_log: document.getElementById('bank_serial_log').checked
             };
             try {
-                const response = await fetch('/bank/submit', {
+                const requestOptions = {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(config)
-                });
+                };
+                let response;
+                try {
+                    response = await fetch('/bank/submit', requestOptions);
+                } catch (networkError) {
+                    // Captive portals can briefly drop the first HTTP transaction.
+                    // Bank save is idempotent, so retry one time before showing an error.
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                    response = await fetch('/bank/submit', requestOptions);
+                }
                 if (!response.ok) {
                     throw new Error((await response.text()) || 'Save failed');
                 }

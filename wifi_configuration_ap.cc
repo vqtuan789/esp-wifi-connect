@@ -127,6 +127,26 @@ void ApplyRuntimeSerialLogPolicy(bool enabled) {
     // output from other modules are outside esp_log runtime filtering.
     esp_log_level_set("*", enabled ? ESP_LOG_INFO : ESP_LOG_NONE);
 }
+
+bool ReadRequestBody(httpd_req_t* req, size_t max_bytes, std::string& body) {
+    if (!req || req->content_len <= 0 || static_cast<size_t>(req->content_len) > max_bytes) {
+        return false;
+    }
+    body.assign(static_cast<size_t>(req->content_len), '\0');
+    size_t offset = 0;
+    unsigned timeouts = 0;
+    while (offset < body.size()) {
+        const int got = httpd_req_recv(req, body.data() + offset, body.size() - offset);
+        if (got == HTTPD_SOCK_ERR_TIMEOUT && timeouts++ < 3) {
+            continue;
+        }
+        if (got <= 0) {
+            return false;
+        }
+        offset += static_cast<size_t>(got);
+    }
+    return true;
+}
 }  // namespace
 
 extern const char index_html_start[] asm("_binary_wifi_configuration_html_start");
@@ -491,34 +511,14 @@ void WifiConfigurationAp::StartWebServer()
         .uri = "/submit",
         .method = HTTP_POST,
         .handler = [](httpd_req_t *req) -> esp_err_t {
-            char *buf;
-            size_t buf_len = req->content_len;
-            if (buf_len > 1024) { // Limit the maximum request body size
-                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
-                return ESP_FAIL;
+            std::string body;
+            if (!ReadRequestBody(req, 1024, body)) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive request");
+                return ESP_OK;
             }
 
-            buf = (char *)malloc(buf_len + 1);
-            if (!buf) {
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate memory");
-                return ESP_FAIL;
-            }
-
-            int ret = httpd_req_recv(req, buf, buf_len);
-            if (ret <= 0) {
-                free(buf);
-                if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                    httpd_resp_send_408(req);
-                } else {
-                    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive request");
-                }
-                return ESP_FAIL;
-            }
-            buf[ret] = '\0';
-
-            // Parse JSON data
-            cJSON *json = cJSON_Parse(buf);
-            free(buf);
+            // Parse JSON data only after the complete HTTP body is received.
+            cJSON *json = cJSON_ParseWithLength(body.data(), body.size());
             if (!json) {
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
                 return ESP_FAIL;
@@ -707,29 +707,19 @@ void WifiConfigurationAp::StartWebServer()
         .uri = "/bank/submit",
         .method = HTTP_POST,
         .handler = [](httpd_req_t *req) -> esp_err_t {
-            const size_t buf_len = req->content_len;
-            if (buf_len == 0 || buf_len > 1024) {
-                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Bank payload size");
-                return ESP_FAIL;
+            std::string body;
+            ESP_LOGI(TAG, "[BANK_CONFIG_AP] save=START bytes=%d", req ? req->content_len : -1);
+            if (!ReadRequestBody(req, 1024, body)) {
+                ESP_LOGW(TAG, "[BANK_CONFIG_AP] save=REJECT reason=body_receive_failed");
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive Bank request");
+                return ESP_OK;
             }
 
-            std::unique_ptr<char[]> buf(new (std::nothrow) char[buf_len + 1]);
-            if (!buf) {
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate memory");
-                return ESP_FAIL;
-            }
-            int received = httpd_req_recv(req, buf.get(), buf_len);
-            if (received <= 0) {
-                if (received == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
-                else httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive request");
-                return ESP_FAIL;
-            }
-            buf[received] = '\0';
-
-            cJSON *json = cJSON_Parse(buf.get());
+            cJSON *json = cJSON_ParseWithLength(body.data(), body.size());
             if (!json) {
+                ESP_LOGW(TAG, "[BANK_CONFIG_AP] save=REJECT reason=invalid_json bytes=%u", static_cast<unsigned>(body.size()));
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
-                return ESP_FAIL;
+                return ESP_OK;
             }
 
             cJSON *api_item = cJSON_GetObjectItemCaseSensitive(json, "sepay_api_key");
@@ -744,8 +734,9 @@ void WifiConfigurationAp::StartWebServer()
                 !cJSON_IsString(nat_item) || !nat_item->valuestring ||
                 !cJSON_IsBool(log_item)) {
                 cJSON_Delete(json);
+                ESP_LOGW(TAG, "[BANK_CONFIG_AP] save=REJECT reason=missing_or_invalid_fields");
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing/invalid Bank fields");
-                return ESP_FAIL;
+                return ESP_OK;
             }
 
             std::string api_key = api_item->valuestring;
@@ -759,16 +750,18 @@ void WifiConfigurationAp::StartWebServer()
                 ec_number != static_cast<double>(ec_limit) || ec_limit < 0 || ec_limit > 1000000000LL ||
                 !IsValidBankWssUrl(wss_url) || !IsValidBankNatUrl(nat_url)) {
                 cJSON_Delete(json);
+                ESP_LOGW(TAG, "[BANK_CONFIG_AP] save=REJECT reason=validation");
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid Bank configuration");
-                return ESP_FAIL;
+                return ESP_OK;
             }
 
             nvs_handle_t nvs;
             esp_err_t err = nvs_open(kBankNamespace, NVS_READWRITE, &nvs);
             if (err != ESP_OK) {
                 cJSON_Delete(json);
+                ESP_LOGE(TAG, "[BANK_CONFIG_AP] save=FAIL reason=nvs_open err=%s", esp_err_to_name(err));
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to open Bank NVS");
-                return ESP_FAIL;
+                return ESP_OK;
             }
 
             const std::string device_id = EnsureBankDeviceId(nvs);
@@ -790,8 +783,9 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_Delete(json);
 
             if (err != ESP_OK) {
+                ESP_LOGE(TAG, "[BANK_CONFIG_AP] save=FAIL reason=nvs_save err=%s", esp_err_to_name(err));
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save Bank configuration");
-                return ESP_FAIL;
+                return ESP_OK;
             }
 
             httpd_resp_set_type(req, "application/json");
@@ -799,7 +793,7 @@ void WifiConfigurationAp::StartWebServer()
             httpd_resp_set_hdr(req, "Connection", "close");
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
 
-            ESP_LOGI(TAG, "[BANK_CONFIG] saved device_id=%s api_key=%s ec=%lld wss=%s nat=%s serial_log=%s",
+            ESP_LOGI(TAG, "[BANK_CONFIG_AP] save=OK device_id=%s api_key=%s ec=%lld wss=%s nat=%s serial_log=%s",
                      device_id.c_str(),
                      api_unchanged ? "unchanged" : (api_key.empty() ? "cleared" : "replaced"),
                      static_cast<long long>(ec_limit),
@@ -871,34 +865,14 @@ void WifiConfigurationAp::StartWebServer()
         .uri = "/advanced/submit",
         .method = HTTP_POST,
         .handler = [](httpd_req_t *req) -> esp_err_t {
-            char *buf;
-            size_t buf_len = req->content_len;
-            if (buf_len > 1024) {
-                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
-                return ESP_FAIL;
+            std::string body;
+            if (!ReadRequestBody(req, 1024, body)) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive request");
+                return ESP_OK;
             }
 
-            buf = (char *)malloc(buf_len + 1);
-            if (!buf) {
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate memory");
-                return ESP_FAIL;
-            }
-
-            int ret = httpd_req_recv(req, buf, buf_len);
-            if (ret <= 0) {
-                free(buf);
-                if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                    httpd_resp_send_408(req);
-                } else {
-                    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive request");
-                }
-                return ESP_FAIL;
-            }
-            buf[ret] = '\0';
-
-            // Parsing JSON data
-            cJSON *json = cJSON_Parse(buf);
-            free(buf);
+            // Parsing JSON data after receiving the complete body.
+            cJSON *json = cJSON_ParseWithLength(body.data(), body.size());
             if (!json) {
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
                 return ESP_FAIL;
